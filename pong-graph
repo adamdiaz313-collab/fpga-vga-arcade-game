@@ -1,0 +1,982 @@
+================================================================================
+pong_graph_st_Diaz.vhd
+================================================================================
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity pong_graph_st is
+    port(
+        clk       : in  std_logic;
+        reset     : in  std_logic;
+        btn       : in  std_logic_vector(4 downto 0);
+        video_on  : in  std_logic;
+        pixel_x   : in  std_logic_vector(9 downto 0);
+        pixel_y   : in  std_logic_vector(9 downto 0);
+        lives_cnt : out std_logic_vector(2 downto 0);
+        graph_rgb : out std_logic_vector(2 downto 0)
+    );
+end pong_graph_st;
+
+architecture sq_ball_arch of pong_graph_st is
+
+    --------------------------------------------------------------------
+    -- SCREEN SIZE
+    -- Search phrase: SCREEN SIZE
+    --------------------------------------------------------------------
+    constant MAX_X : integer := 639;
+    constant MAX_Y : integer := 479;
+
+    --------------------------------------------------------------------
+    -- BUTTON MAP
+    -- Search phrase: BUTTON MAP
+    -- btn(4) = Center / FIRE
+    -- btn(3) = Up
+    -- btn(2) = Left
+    -- btn(1) = Right
+    -- btn(0) = Down
+    --------------------------------------------------------------------
+
+    --------------------------------------------------------------------
+    -- SHIP SCALE
+    -- Search phrase: SHIP SCALE
+    -- Ship ROM is 8x8 and enlarged by SHIP_SCALE.
+    --------------------------------------------------------------------
+    constant SHIP_SCALE : integer := 3;
+
+    --------------------------------------------------------------------
+    -- ASTEROID SIZE SCALE OPTIONS
+    -- Search phrase: ASTEROID SIZE OPTIONS
+    -- Asteroid sizes are selected dynamically using asteroid_scale_reg.
+    -- Scale mapping:
+    --   0 -> 16x16
+    --   1 -> 24x24
+    --   2 -> 32x32
+    --   3 -> 24x24
+    --------------------------------------------------------------------
+
+    --------------------------------------------------------------------
+    -- EXPLOSION SCALE
+    -- Search phrase: EXPLOSION SCALE
+    --------------------------------------------------------------------
+    constant EXP_SCALE  : integer := 2;
+
+    --------------------------------------------------------------------
+    -- SHIP SIZE
+    -- Search phrase: SHIP SIZE
+    --------------------------------------------------------------------
+    constant SHIP_X_SIZE : integer := 8 * SHIP_SCALE;   -- 24
+    constant SHIP_Y_SIZE : integer := 8 * SHIP_SCALE;   -- 24
+
+    --------------------------------------------------------------------
+    -- SHIP MOVEMENT SPEED
+    -- Search phrase: SHIP MOVEMENT SPEED
+    -- Change SHIP_V to make the ship move faster or slower.
+    --------------------------------------------------------------------
+    constant SHIP_V      : integer := 4;
+
+    --------------------------------------------------------------------
+    -- FIRING BALL SIZE
+    -- Search phrase: FIRING BALL SIZE
+    --------------------------------------------------------------------
+    constant BALL_SIZE   : integer := 8;
+
+    --------------------------------------------------------------------
+    -- BALL SPEED
+    -- Search phrase: BALL SPEED
+    -- Change BALL_V_P to make the missile move faster or slower.
+    --------------------------------------------------------------------
+    constant BALL_V_P    : integer := 4;
+
+    --------------------------------------------------------------------
+    -- ASTEROID SPEED
+    -- Search phrase: ASTEROID SPEED
+    -- Change AST_V to make all asteroids move faster or slower.
+    --------------------------------------------------------------------
+    constant AST_V       : integer := 1;
+
+    --------------------------------------------------------------------
+    -- EXPLOSION SIZE
+    -- Search phrase: EXPLOSION SIZE
+    --------------------------------------------------------------------
+    constant EXP_SIZE    : integer := 16 * EXP_SCALE;   -- 32
+
+    --------------------------------------------------------------------
+    -- EXPLOSION TIMER
+    -- Search phrase: EXPLOSION TIMER
+    -- Roughly 120 refresh ticks is about 2 seconds.
+    --------------------------------------------------------------------
+    constant EXP_TIME_TICKS : integer := 120;
+
+    --------------------------------------------------------------------
+    -- REFRESH TICK
+    -- Search phrase: REFRESH TICK
+    --------------------------------------------------------------------
+    signal refr_tick : std_logic;
+
+    --------------------------------------------------------------------
+    -- PIXEL COORDINATES
+    -- Search phrase: PIXEL COORDINATES
+    --------------------------------------------------------------------
+    signal pix_x, pix_y : unsigned(9 downto 0);
+
+    --------------------------------------------------------------------
+    -- LIFE COUNTER
+    -- Search phrase: LIFE COUNTER
+    -- 3-bit counter storing the current number of lives.
+    -- Starts at 3, decrements on ship hit.
+    --------------------------------------------------------------------
+    signal lives_cnt_reg, lives_cnt_next : unsigned(2 downto 0);
+
+    --------------------------------------------------------------------
+    -- SHIP POSITION REGISTERS
+    -- Search phrase: SHIP POSITION REGISTERS
+    --------------------------------------------------------------------
+    signal ship_x_reg, ship_x_next : unsigned(9 downto 0);
+    signal ship_y_reg, ship_y_next : unsigned(9 downto 0);
+    signal ship_x_l, ship_x_r      : unsigned(9 downto 0);
+    signal ship_y_t, ship_y_b      : unsigned(9 downto 0);
+    signal ship_on                 : std_logic;
+
+    --------------------------------------------------------------------
+    -- SHIP ROM IMAGE
+    -- Search phrase: SHIP ROM IMAGE
+    -- Left-facing ship.
+    -- Change the bits here to redesign the ship shape.
+    --------------------------------------------------------------------
+    type rom_type is array(0 to 7) of std_logic_vector(0 to 7);
+    constant SHIP_ROM : rom_type := (
+        "00010000",
+        "00111000",
+        "11111111",
+        "01111110",
+        "00111100",
+        "01111110",
+        "11111111",
+        "00111000"
+    );
+
+    --------------------------------------------------------------------
+    -- SHIP ROM LOOKUP SIGNALS
+    -- Search phrase: SHIP ROM LOOKUP
+    --------------------------------------------------------------------
+    signal ship_rom_addr, ship_rom_col : unsigned(2 downto 0);
+    signal ship_rom_data               : std_logic_vector(0 to 7);
+    signal ship_rom_bit                : std_logic;
+    signal ship_region_on              : std_logic;
+    signal ship_x_pix, ship_y_pix      : unsigned(9 downto 0);
+
+    --------------------------------------------------------------------
+    -- MISSILE REGISTERS
+    -- Search phrase: MISSILE REGISTERS
+    --------------------------------------------------------------------
+    signal firing_ball_x_reg, firing_ball_x_next : unsigned(9 downto 0);
+    signal firing_ball_y_reg, firing_ball_y_next : unsigned(9 downto 0);
+    signal firing_ball_x_l, firing_ball_x_r      : unsigned(9 downto 0);
+    signal firing_ball_y_t, firing_ball_y_b      : unsigned(9 downto 0);
+    signal firing_ball_on                        : std_logic;
+    signal firing_active_reg, firing_active_next : std_logic;
+
+    --------------------------------------------------------------------
+    -- ASTEROID POSITION REGISTERS
+    -- Search phrase: ASTEROID POSITION REGISTERS
+    --------------------------------------------------------------------
+    signal asteroid_x_reg, asteroid_x_next : unsigned(9 downto 0);
+    signal asteroid_y_reg, asteroid_y_next : unsigned(9 downto 0);
+    signal asteroid_x_l, asteroid_x_r      : unsigned(9 downto 0);
+    signal asteroid_y_t, asteroid_y_b      : unsigned(9 downto 0);
+    signal asteroid_on                     : std_logic;
+    signal asteroid_active_reg, asteroid_active_next : std_logic;
+
+    --------------------------------------------------------------------
+    -- ASTEROID SPAWN PATH
+    -- Search phrase: ASTEROID SPAWN PATH
+    -- Controls the lane / starting vertical region of the asteroid.
+    --------------------------------------------------------------------
+    signal asteroid_path_reg, asteroid_path_next : unsigned(1 downto 0);
+    signal asteroid_spawn_y : unsigned(9 downto 0);
+
+    --------------------------------------------------------------------
+    -- ASTEROID SHAPE / SIZE CONTROL
+    -- Search phrase: ASTEROID SHAPE
+    -- asteroid_type_reg chooses which ROM shape is used.
+    --
+    -- Search phrase: ASTEROID SIZE
+    -- asteroid_scale_reg chooses asteroid display size.
+    --------------------------------------------------------------------
+    signal asteroid_type_reg, asteroid_type_next   : unsigned(1 downto 0);
+    signal asteroid_scale_reg, asteroid_scale_next : unsigned(1 downto 0);
+
+    signal asteroid_size_u   : unsigned(9 downto 0);
+    signal asteroid_center_y : unsigned(9 downto 0);
+
+    --------------------------------------------------------------------
+    -- ASTEROID ROM SHAPES
+    -- Search phrase: ASTEROID ROM SHAPES
+    -- Four different asteroid bitmaps.
+    --------------------------------------------------------------------
+    type ast_rom_type is array(0 to 7) of std_logic_vector(0 to 7);
+
+    constant AST_ROM_0 : ast_rom_type := (
+        "00111100",
+        "01111110",
+        "11111111",
+        "11111111",
+        "11111111",
+        "11111111",
+        "01111110",
+        "00111100"
+    );
+
+    constant AST_ROM_1 : ast_rom_type := (
+        "00011000",
+        "01111110",
+        "11111111",
+        "11111110",
+        "01111111",
+        "11111111",
+        "01111110",
+        "00011000"
+    );
+
+    constant AST_ROM_2 : ast_rom_type := (
+        "00111100",
+        "11111111",
+        "11111110",
+        "01111100",
+        "00111110",
+        "01111111",
+        "11111111",
+        "00111100"
+    );
+
+    constant AST_ROM_3 : ast_rom_type := (
+        "00011100",
+        "01111110",
+        "11111111",
+        "11111101",
+        "10111111",
+        "11111111",
+        "01111110",
+        "00111000"
+    );
+
+    signal asteroid_rom_current                : ast_rom_type;
+    signal asteroid_rom_addr, asteroid_rom_col : unsigned(2 downto 0);
+    signal asteroid_rom_data                   : std_logic_vector(0 to 7);
+    signal asteroid_rom_bit                    : std_logic;
+    signal asteroid_region_on                  : std_logic;
+    signal asteroid_x_pix, asteroid_y_pix      : unsigned(9 downto 0);
+
+    --------------------------------------------------------------------
+    -- ASTEROID EXPLOSION REGISTERS
+    -- Search phrase: ASTEROID EXPLOSION
+    --------------------------------------------------------------------
+    signal asteroid_exp_active_reg, asteroid_exp_active_next : std_logic;
+    signal asteroid_exp_timer_reg, asteroid_exp_timer_next   : integer range 0 to EXP_TIME_TICKS;
+    signal asteroid_exp_x_reg, asteroid_exp_x_next           : unsigned(9 downto 0);
+    signal asteroid_exp_y_reg, asteroid_exp_y_next           : unsigned(9 downto 0);
+    signal asteroid_exp_on                                   : std_logic;
+
+    --------------------------------------------------------------------
+    -- SHIP EXPLOSION REGISTERS
+    -- Search phrase: SHIP EXPLOSION
+    --------------------------------------------------------------------
+    signal ship_exp_active_reg, ship_exp_active_next : std_logic;
+    signal ship_exp_timer_reg, ship_exp_timer_next   : integer range 0 to EXP_TIME_TICKS;
+    signal ship_exp_x_reg, ship_exp_x_next           : unsigned(9 downto 0);
+    signal ship_exp_y_reg, ship_exp_y_next           : unsigned(9 downto 0);
+    signal ship_exp_on                               : std_logic;
+
+    --------------------------------------------------------------------
+    -- EXPLOSION ROM IMAGE
+    -- Search phrase: EXPLOSION ROM IMAGE
+    --------------------------------------------------------------------
+    type exp_rom_type is array(0 to 15) of std_logic_vector(0 to 15);
+    constant EXP_ROM : exp_rom_type := (
+        "0000000110000000",
+        "0001001111001000",
+        "0000111111110000",
+        "0000011111100000",
+        "1000011111100001",
+        "1100111111110011",
+        "0111111111111110",
+        "0011111111111100",
+        "0011111111111100",
+        "0111111111111110",
+        "1100111111110011",
+        "1000011111100001",
+        "0000011111100000",
+        "0000111111110000",
+        "0001001111001000",
+        "0000000110000000"
+    );
+
+    signal asteroid_exp_region_on : std_logic;
+    signal asteroid_exp_x_pix, asteroid_exp_y_pix : unsigned(9 downto 0);
+    signal asteroid_exp_rom_addr, asteroid_exp_rom_col : unsigned(3 downto 0);
+    signal asteroid_exp_rom_data : std_logic_vector(0 to 15);
+    signal asteroid_exp_rom_bit  : std_logic;
+
+    signal ship_exp_region_on : std_logic;
+    signal ship_exp_x_pix, ship_exp_y_pix : unsigned(9 downto 0);
+    signal ship_exp_rom_addr, ship_exp_rom_col : unsigned(3 downto 0);
+    signal ship_exp_rom_data : std_logic_vector(0 to 15);
+    signal ship_exp_rom_bit  : std_logic;
+
+    --------------------------------------------------------------------
+    -- COLLISION SIGNALS
+    -- Search phrase: COLLISION SIGNALS
+    --------------------------------------------------------------------
+    signal hit_asteroid : std_logic;
+    signal hit_ship     : std_logic;
+
+    --------------------------------------------------------------------
+    -- COLOR SETTINGS
+    -- Search phrase: COLOR SETTINGS
+    --------------------------------------------------------------------
+    signal ship_rgb        : std_logic_vector(2 downto 0);
+    signal firing_ball_rgb : std_logic_vector(2 downto 0);
+    signal asteroid_rgb    : std_logic_vector(2 downto 0);
+
+begin
+
+    --------------------------------------------------------------------
+    -- PIXEL CASTING
+    -- Search phrase: PIXEL CASTING
+    --------------------------------------------------------------------
+    pix_x <= unsigned(pixel_x);
+    pix_y <= unsigned(pixel_y);
+
+    --------------------------------------------------------------------
+    -- REFRESH TICK GENERATION
+    -- Search phrase: REFRESH TICK GENERATION
+    --------------------------------------------------------------------
+    refr_tick <= '1' when (pix_y = to_unsigned(481,10)) and
+                          (pix_x = to_unsigned(0,10)) else '0';
+
+    --------------------------------------------------------------------
+    -- ASTEROID SPAWN Y POSITIONS
+    -- Search phrase: ASTEROID SPAWN POSITIONS
+    --------------------------------------------------------------------
+    with asteroid_path_reg select
+        asteroid_spawn_y <=
+            to_unsigned(60, 10)  when "00",
+            to_unsigned(150, 10) when "01",
+            to_unsigned(250, 10) when "10",
+            to_unsigned(340, 10) when others;
+
+    --------------------------------------------------------------------
+    -- ASTEROID SIZE SELECTION
+    -- Search phrase: ASTEROID SIZE SELECTION
+    --------------------------------------------------------------------
+    with to_integer(asteroid_scale_reg) select
+        asteroid_size_u <=
+            to_unsigned(16, 10) when 0,
+            to_unsigned(24, 10) when 1,
+            to_unsigned(32, 10) when 2,
+            to_unsigned(24, 10) when others;
+
+    asteroid_center_y <= asteroid_y_reg + shift_right(asteroid_size_u, 1);
+
+    --------------------------------------------------------------------
+    -- ASTEROID SHAPE SELECTION
+    -- Search phrase: ASTEROID SHAPE SELECTION
+    --------------------------------------------------------------------
+    with to_integer(asteroid_type_reg) select
+        asteroid_rom_current <=
+            AST_ROM_0 when 0,
+            AST_ROM_1 when 1,
+            AST_ROM_2 when 2,
+            AST_ROM_3 when others;
+
+    --------------------------------------------------------------------
+    -- MAIN REGISTERS
+    -- Search phrase: MAIN REGISTERS
+    --------------------------------------------------------------------
+    process(clk, reset)
+    begin
+        if reset = '1' then
+
+            ----------------------------------------------------------------
+            -- SHIP START POSITION
+            -- Search phrase: SHIP START POSITION
+            ----------------------------------------------------------------
+            ship_x_reg <= to_unsigned(590, 10);
+            ship_y_reg <= to_unsigned(220, 10);
+
+            ----------------------------------------------------------------
+            -- MISSILE RESET
+            -- Search phrase: MISSILE RESET
+            ----------------------------------------------------------------
+            firing_ball_x_reg <= (others => '0');
+            firing_ball_y_reg <= (others => '0');
+            firing_active_reg <= '0';
+
+            ----------------------------------------------------------------
+            -- ASTEROID START POSITION
+            -- Search phrase: ASTEROID START POSITION
+            ----------------------------------------------------------------
+            asteroid_x_reg <= to_unsigned(0, 10);
+            asteroid_y_reg <= to_unsigned(100, 10);
+            asteroid_active_reg <= '1';
+            asteroid_path_reg <= "00";
+            asteroid_type_reg <= "00";
+            asteroid_scale_reg <= "01";
+
+            ----------------------------------------------------------------
+            -- ASTEROID EXPLOSION RESET
+            -- Search phrase: ASTEROID EXPLOSION RESET
+            ----------------------------------------------------------------
+            asteroid_exp_active_reg <= '0';
+            asteroid_exp_timer_reg <= 0;
+            asteroid_exp_x_reg <= (others => '0');
+            asteroid_exp_y_reg <= (others => '0');
+
+            ----------------------------------------------------------------
+            -- SHIP EXPLOSION RESET
+            -- Search phrase: SHIP EXPLOSION RESET
+            ----------------------------------------------------------------
+            ship_exp_active_reg <= '0';
+            ship_exp_timer_reg <= 0;
+            ship_exp_x_reg <= (others => '0');
+            ship_exp_y_reg <= (others => '0');
+
+            ----------------------------------------------------------------
+            -- LIFE COUNTER RESET
+            -- Search phrase: LIFE COUNTER RESET
+            ----------------------------------------------------------------
+            lives_cnt_reg <= "011";
+
+        elsif rising_edge(clk) then
+            ship_x_reg <= ship_x_next;
+            ship_y_reg <= ship_y_next;
+
+            firing_ball_x_reg <= firing_ball_x_next;
+            firing_ball_y_reg <= firing_ball_y_next;
+            firing_active_reg <= firing_active_next;
+
+            asteroid_x_reg <= asteroid_x_next;
+            asteroid_y_reg <= asteroid_y_next;
+            asteroid_active_reg <= asteroid_active_next;
+            asteroid_path_reg <= asteroid_path_next;
+            asteroid_type_reg <= asteroid_type_next;
+            asteroid_scale_reg <= asteroid_scale_next;
+
+            asteroid_exp_active_reg <= asteroid_exp_active_next;
+            asteroid_exp_timer_reg <= asteroid_exp_timer_next;
+            asteroid_exp_x_reg <= asteroid_exp_x_next;
+            asteroid_exp_y_reg <= asteroid_exp_y_next;
+
+            ship_exp_active_reg <= ship_exp_active_next;
+            ship_exp_timer_reg <= ship_exp_timer_next;
+            ship_exp_x_reg <= ship_exp_x_next;
+            ship_exp_y_reg <= ship_exp_y_next;
+
+            lives_cnt_reg <= lives_cnt_next;
+        end if;
+    end process;
+
+    --------------------------------------------------------------------
+    -- MAIN GAME LOGIC
+    -- Search phrase: MAIN GAME LOGIC
+    --------------------------------------------------------------------
+    process(ship_x_reg, ship_y_reg, btn, refr_tick,
+            firing_ball_x_reg, firing_ball_y_reg, firing_active_reg,
+            asteroid_x_reg, asteroid_y_reg, asteroid_active_reg, asteroid_path_reg,
+            asteroid_type_reg, asteroid_scale_reg, asteroid_size_u, asteroid_center_y,
+            asteroid_exp_active_reg, asteroid_exp_timer_reg, asteroid_exp_x_reg, asteroid_exp_y_reg,
+            ship_exp_active_reg, ship_exp_timer_reg, ship_exp_x_reg, ship_exp_y_reg,
+            lives_cnt_reg, hit_asteroid, hit_ship, asteroid_spawn_y)
+    begin
+        ----------------------------------------------------------------
+        -- DEFAULT NEXT VALUES
+        -- Search phrase: DEFAULT NEXT VALUES
+        ----------------------------------------------------------------
+        ship_x_next <= ship_x_reg;
+        ship_y_next <= ship_y_reg;
+
+        firing_ball_x_next <= firing_ball_x_reg;
+        firing_ball_y_next <= firing_ball_y_reg;
+        firing_active_next <= firing_active_reg;
+
+        asteroid_x_next <= asteroid_x_reg;
+        asteroid_y_next <= asteroid_y_reg;
+        asteroid_active_next <= asteroid_active_reg;
+        asteroid_path_next <= asteroid_path_reg;
+        asteroid_type_next <= asteroid_type_reg;
+        asteroid_scale_next <= asteroid_scale_reg;
+
+        asteroid_exp_active_next <= asteroid_exp_active_reg;
+        asteroid_exp_timer_next <= asteroid_exp_timer_reg;
+        asteroid_exp_x_next <= asteroid_exp_x_reg;
+        asteroid_exp_y_next <= asteroid_exp_y_reg;
+
+        ship_exp_active_next <= ship_exp_active_reg;
+        ship_exp_timer_next <= ship_exp_timer_reg;
+        ship_exp_x_next <= ship_exp_x_reg;
+        ship_exp_y_next <= ship_exp_y_reg;
+
+        lives_cnt_next <= lives_cnt_reg;
+
+        if refr_tick = '1' then
+
+            ------------------------------------------------------------
+            -- SHIP MOVEMENT
+            -- Search phrase: SHIP MOVEMENT
+            ------------------------------------------------------------
+            if ship_exp_active_reg = '0' then
+                if (btn(3) = '1') and (to_integer(ship_y_reg) > SHIP_V) then
+                    ship_y_next <= ship_y_reg - SHIP_V;
+                elsif (btn(0) = '1') and
+                      (to_integer(ship_y_reg) < MAX_Y - SHIP_Y_SIZE - SHIP_V) then
+                    ship_y_next <= ship_y_reg + SHIP_V;
+                end if;
+
+                if (btn(2) = '1') and (to_integer(ship_x_reg) > SHIP_V) then
+                    ship_x_next <= ship_x_reg - SHIP_V;
+                elsif (btn(1) = '1') and
+                      (to_integer(ship_x_reg) < MAX_X - SHIP_X_SIZE - SHIP_V) then
+                    ship_x_next <= ship_x_reg + SHIP_V;
+                end if;
+            end if;
+
+            ------------------------------------------------------------
+            -- FIRING BUTTON
+            -- Search phrase: FIRING BUTTON
+            ------------------------------------------------------------
+            if (btn(4) = '1') and (firing_active_reg = '0') and (ship_exp_active_reg = '0') then
+
+                --------------------------------------------------------
+                -- FIRING BALL START POSITION
+                -- Search phrase: FIRING BALL START POSITION
+                --------------------------------------------------------
+                firing_ball_x_next <= ship_x_reg - to_unsigned(BALL_SIZE, 10);
+                firing_ball_y_next <= ship_y_reg + to_unsigned(10, 10);
+                firing_active_next <= '1';
+
+            ------------------------------------------------------------
+            -- FIRING BALL MOVEMENT
+            -- Search phrase: FIRING BALL MOVEMENT
+            ------------------------------------------------------------
+            elsif firing_active_reg = '1' then
+                if to_integer(firing_ball_x_reg) > BALL_V_P then
+                    firing_ball_x_next <= firing_ball_x_reg - BALL_V_P;
+                else
+                    ----------------------------------------------------
+                    -- FIRING BALL OFF SCREEN RESET
+                    -- Search phrase: FIRING BALL OFF SCREEN RESET
+                    ----------------------------------------------------
+                    firing_ball_x_next <= (others => '0');
+                    firing_ball_y_next <= (others => '0');
+                    firing_active_next <= '0';
+                end if;
+            end if;
+
+            ------------------------------------------------------------
+            -- ASTEROID MOVEMENT
+            -- Search phrase: ASTEROID MOVEMENT
+            -- Horizontal motion across the screen.
+            ------------------------------------------------------------
+            if (asteroid_active_reg = '1') and (asteroid_exp_active_reg = '0') then
+                if to_integer(asteroid_x_reg) < MAX_X - AST_V then
+                    asteroid_x_next <= asteroid_x_reg + AST_V;
+                else
+                    ----------------------------------------------------
+                    -- ASTEROID RESPAWN
+                    -- Search phrase: ASTEROID RESPAWN
+                    -- When asteroid exits screen, respawn it with new
+                    -- path, shape, and size.
+                    ----------------------------------------------------
+                    asteroid_x_next <= to_unsigned(0, 10);
+                    asteroid_y_next <= asteroid_spawn_y;
+                    asteroid_path_next <= asteroid_path_reg + 1;
+                    asteroid_type_next <= asteroid_type_reg + 1;
+                    asteroid_scale_next <= asteroid_scale_reg + 1;
+                end if;
+
+                --------------------------------------------------------
+                -- GRAVITATION LOCK
+                -- Search phrase: GRAVITATION LOCK
+                -- Basic vertical tracking toward the ship center.
+                -- Increase step size here if you want stronger tracking.
+                --------------------------------------------------------
+                if asteroid_center_y < (ship_y_reg + to_unsigned(SHIP_Y_SIZE/2, 10)) then
+                    asteroid_y_next <= asteroid_y_reg + 1;
+                elsif asteroid_center_y > (ship_y_reg + to_unsigned(SHIP_Y_SIZE/2, 10)) then
+                    asteroid_y_next <= asteroid_y_reg - 1;
+                end if;
+            end if;
+
+            ------------------------------------------------------------
+            -- MISSILE HITS ASTEROID
+            -- Search phrase: MISSILE HITS ASTEROID
+            ------------------------------------------------------------
+            if (hit_asteroid = '1') and
+               (asteroid_active_reg = '1') and
+               (firing_active_reg = '1') and
+               (asteroid_exp_active_reg = '0') then
+
+                firing_active_next <= '0';
+                firing_ball_x_next <= (others => '0');
+                firing_ball_y_next <= (others => '0');
+
+                asteroid_active_next <= '0';
+                asteroid_exp_active_next <= '1';
+                asteroid_exp_timer_next <= EXP_TIME_TICKS;
+                asteroid_exp_x_next <= asteroid_x_reg - to_unsigned(4, 10);
+                asteroid_exp_y_next <= asteroid_y_reg - to_unsigned(4, 10);
+            end if;
+
+            ------------------------------------------------------------
+            -- ASTEROID HITS SHIP
+            -- Search phrase: ASTEROID HITS SHIP
+            ------------------------------------------------------------
+            if (hit_ship = '1') and
+               (asteroid_active_reg = '1') and
+               (ship_exp_active_reg = '0') then
+
+                asteroid_active_next <= '0';
+                asteroid_exp_active_next <= '1';
+                asteroid_exp_timer_next <= EXP_TIME_TICKS;
+                asteroid_exp_x_next <= asteroid_x_reg - to_unsigned(4, 10);
+                asteroid_exp_y_next <= asteroid_y_reg - to_unsigned(4, 10);
+
+                ship_exp_active_next <= '1';
+                ship_exp_timer_next <= EXP_TIME_TICKS;
+                ship_exp_x_next <= ship_x_reg - to_unsigned(4, 10);
+                ship_exp_y_next <= ship_y_reg - to_unsigned(4, 10);
+
+                if lives_cnt_reg > 0 then
+                    lives_cnt_next <= lives_cnt_reg - 1;
+                end if;
+
+                firing_active_next <= '0';
+                firing_ball_x_next <= (others => '0');
+                firing_ball_y_next <= (others => '0');
+            end if;
+
+            ------------------------------------------------------------
+            -- ASTEROID EXPLOSION TIMER
+            -- Search phrase: ASTEROID EXPLOSION TIMER
+            ------------------------------------------------------------
+            if asteroid_exp_active_reg = '1' then
+                if asteroid_exp_timer_reg > 1 then
+                    asteroid_exp_timer_next <= asteroid_exp_timer_reg - 1;
+                else
+                    asteroid_exp_timer_next <= 0;
+                    asteroid_exp_active_next <= '0';
+                    asteroid_x_next <= to_unsigned(0, 10);
+                    asteroid_y_next <= asteroid_spawn_y;
+                    asteroid_active_next <= '1';
+                    asteroid_path_next <= asteroid_path_reg + 1;
+                    asteroid_type_next <= asteroid_type_reg + 1;
+                    asteroid_scale_next <= asteroid_scale_reg + 1;
+                end if;
+            end if;
+
+            ------------------------------------------------------------
+            -- SHIP EXPLOSION TIMER
+            -- Search phrase: SHIP EXPLOSION TIMER
+            ------------------------------------------------------------
+            if ship_exp_active_reg = '1' then
+                if ship_exp_timer_reg > 1 then
+                    ship_exp_timer_next <= ship_exp_timer_reg - 1;
+                else
+                    ship_exp_timer_next <= 0;
+                    ship_exp_active_next <= '0';
+
+                    ----------------------------------------------------
+                    -- SHIP RESPAWN POSITION
+                    -- Search phrase: SHIP RESPAWN POSITION
+                    ----------------------------------------------------
+                    ship_x_next <= to_unsigned(590, 10);
+                    ship_y_next <= to_unsigned(220, 10);
+                end if;
+            end if;
+
+        end if;
+    end process;
+
+    --------------------------------------------------------------------
+    -- LIFE COUNTER OUTPUT
+    -- Search phrase: LIFE COUNTER OUTPUT
+    --------------------------------------------------------------------
+    lives_cnt <= std_logic_vector(lives_cnt_reg);
+
+    --------------------------------------------------------------------
+    -- SHIP BOUNDARIES
+    -- Search phrase: SHIP BOUNDARIES
+    --------------------------------------------------------------------
+    ship_x_l <= ship_x_reg;
+    ship_x_r <= ship_x_reg + SHIP_X_SIZE - 1;
+    ship_y_t <= ship_y_reg;
+    ship_y_b <= ship_y_reg + SHIP_Y_SIZE - 1;
+
+    --------------------------------------------------------------------
+    -- SHIP REGION CHECK
+    -- Search phrase: SHIP REGION CHECK
+    --------------------------------------------------------------------
+    ship_region_on <= '1' when
+        (pix_x >= ship_x_l) and (pix_x <= ship_x_r) and
+        (pix_y >= ship_y_t) and (pix_y <= ship_y_b)
+    else '0';
+
+    --------------------------------------------------------------------
+    -- SHIP SCALE LOOKUP
+    -- Search phrase: SHIP SCALE LOOKUP
+    --------------------------------------------------------------------
+    ship_x_pix <= (pix_x - ship_x_l) / SHIP_SCALE;
+    ship_y_pix <= (pix_y - ship_y_t) / SHIP_SCALE;
+
+    --------------------------------------------------------------------
+    -- SHIP ROM LOOKUP LOGIC
+    -- Search phrase: SHIP ROM LOOKUP LOGIC
+    --------------------------------------------------------------------
+    ship_rom_addr <= ship_y_pix(2 downto 0);
+    ship_rom_col  <= ship_x_pix(2 downto 0);
+    ship_rom_data <= SHIP_ROM(to_integer(ship_rom_addr));
+    ship_rom_bit  <= ship_rom_data(to_integer(ship_rom_col));
+
+    --------------------------------------------------------------------
+    -- FINAL SHIP PIXEL
+    -- Search phrase: FINAL SHIP PIXEL
+    --------------------------------------------------------------------
+    ship_on <= '1' when
+        (ship_region_on = '1') and
+        (ship_rom_bit = '1') and
+        (ship_exp_active_reg = '0')
+    else '0';
+
+    --------------------------------------------------------------------
+    -- MISSILE BOUNDARIES
+    -- Search phrase: MISSILE BOUNDARIES
+    --------------------------------------------------------------------
+    firing_ball_x_l <= firing_ball_x_reg;
+    firing_ball_y_t <= firing_ball_y_reg;
+    firing_ball_x_r <= firing_ball_x_l + BALL_SIZE - 1;
+    firing_ball_y_b <= firing_ball_y_t + BALL_SIZE - 1;
+
+    --------------------------------------------------------------------
+    -- MISSILE PIXEL CHECK
+    -- Search phrase: MISSILE PIXEL CHECK
+    --------------------------------------------------------------------
+    firing_ball_on <= '1' when
+        (firing_active_reg = '1') and
+        (pix_x >= firing_ball_x_l) and
+        (pix_x <= firing_ball_x_r) and
+        (pix_y >= firing_ball_y_t) and
+        (pix_y <= firing_ball_y_b)
+    else '0';
+
+    --------------------------------------------------------------------
+    -- ASTEROID BOUNDARIES
+    -- Search phrase: ASTEROID BOUNDARIES
+    --------------------------------------------------------------------
+    asteroid_x_l <= asteroid_x_reg;
+    asteroid_x_r <= asteroid_x_reg + asteroid_size_u - 1;
+    asteroid_y_t <= asteroid_y_reg;
+    asteroid_y_b <= asteroid_y_reg + asteroid_size_u - 1;
+
+    --------------------------------------------------------------------
+    -- ASTEROID REGION CHECK
+    -- Search phrase: ASTEROID REGION CHECK
+    --------------------------------------------------------------------
+    asteroid_region_on <= '1' when
+        (pix_x >= asteroid_x_l) and (pix_x <= asteroid_x_r) and
+        (pix_y >= asteroid_y_t) and (pix_y <= asteroid_y_b)
+    else '0';
+
+    --------------------------------------------------------------------
+    -- ASTEROID SCALE LOOKUP
+    -- Search phrase: ASTEROID SCALE LOOKUP
+    --------------------------------------------------------------------
+    process(pix_x, asteroid_x_l, asteroid_scale_reg)
+        variable scale_val : integer;
+        variable temp_val  : unsigned(9 downto 0);
+    begin
+        case to_integer(asteroid_scale_reg) is
+            when 0 => scale_val := 2;
+            when 1 => scale_val := 3;
+            when 2 => scale_val := 4;
+            when others => scale_val := 3;
+        end case;
+        temp_val := (pix_x - asteroid_x_l) / scale_val;
+        asteroid_x_pix <= temp_val;
+    end process;
+
+    process(pix_y, asteroid_y_t, asteroid_scale_reg)
+        variable scale_val : integer;
+        variable temp_val  : unsigned(9 downto 0);
+    begin
+        case to_integer(asteroid_scale_reg) is
+            when 0 => scale_val := 2;
+            when 1 => scale_val := 3;
+            when 2 => scale_val := 4;
+            when others => scale_val := 3;
+        end case;
+        temp_val := (pix_y - asteroid_y_t) / scale_val;
+        asteroid_y_pix <= temp_val;
+    end process;
+
+    --------------------------------------------------------------------
+    -- ASTEROID ROM LOOKUP LOGIC
+    -- Search phrase: ASTEROID ROM LOOKUP LOGIC
+    --------------------------------------------------------------------
+    asteroid_rom_addr <= asteroid_y_pix(2 downto 0);
+    asteroid_rom_col  <= asteroid_x_pix(2 downto 0);
+    asteroid_rom_data <= asteroid_rom_current(to_integer(asteroid_rom_addr));
+    asteroid_rom_bit  <= asteroid_rom_data(to_integer(asteroid_rom_col));
+
+    --------------------------------------------------------------------
+    -- FINAL ASTEROID PIXEL
+    -- Search phrase: FINAL ASTEROID PIXEL
+    --------------------------------------------------------------------
+    asteroid_on <= '1' when
+        (asteroid_region_on = '1') and
+        (asteroid_rom_bit = '1') and
+        (asteroid_active_reg = '1') and
+        (asteroid_exp_active_reg = '0')
+    else '0';
+
+    --------------------------------------------------------------------
+    -- COLLISION CHECK: MISSILE VS ASTEROID
+    -- Search phrase: MISSILE ASTEROID COLLISION
+    --------------------------------------------------------------------
+    hit_asteroid <= '1' when
+        (firing_active_reg = '1') and
+        (asteroid_active_reg = '1') and
+        (firing_ball_x_l <= asteroid_x_r) and
+        (firing_ball_x_r >= asteroid_x_l) and
+        (firing_ball_y_t <= asteroid_y_b) and
+        (firing_ball_y_b >= asteroid_y_t)
+    else '0';
+
+    --------------------------------------------------------------------
+    -- COLLISION CHECK: ASTEROID VS SHIP
+    -- Search phrase: ASTEROID SHIP COLLISION
+    --------------------------------------------------------------------
+    hit_ship <= '1' when
+        (asteroid_active_reg = '1') and
+        (ship_exp_active_reg = '0') and
+        (asteroid_x_l <= ship_x_r) and
+        (asteroid_x_r >= ship_x_l) and
+        (asteroid_y_t <= ship_y_b) and
+        (asteroid_y_b >= ship_y_t)
+    else '0';
+
+    --------------------------------------------------------------------
+    -- ASTEROID EXPLOSION DRAWING
+    -- Search phrase: ASTEROID EXPLOSION DRAWING
+    --------------------------------------------------------------------
+    asteroid_exp_region_on <= '1' when
+        (pix_x >= asteroid_exp_x_reg) and (pix_x <= asteroid_exp_x_reg + EXP_SIZE - 1) and
+        (pix_y >= asteroid_exp_y_reg) and (pix_y <= asteroid_exp_y_reg + EXP_SIZE - 1)
+    else '0';
+
+    asteroid_exp_x_pix <= (pix_x - asteroid_exp_x_reg) / EXP_SCALE;
+    asteroid_exp_y_pix <= (pix_y - asteroid_exp_y_reg) / EXP_SCALE;
+
+    asteroid_exp_rom_addr <= asteroid_exp_y_pix(3 downto 0);
+    asteroid_exp_rom_col  <= asteroid_exp_x_pix(3 downto 0);
+    asteroid_exp_rom_data <= EXP_ROM(to_integer(asteroid_exp_rom_addr));
+    asteroid_exp_rom_bit  <= asteroid_exp_rom_data(to_integer(asteroid_exp_rom_col));
+
+    asteroid_exp_on <= '1' when
+        (asteroid_exp_active_reg = '1') and
+        (asteroid_exp_region_on = '1') and
+        (asteroid_exp_rom_bit = '1')
+    else '0';
+
+    --------------------------------------------------------------------
+    -- SHIP EXPLOSION DRAWING
+    -- Search phrase: SHIP EXPLOSION DRAWING
+    --------------------------------------------------------------------
+    ship_exp_region_on <= '1' when
+        (pix_x >= ship_exp_x_reg) and (pix_x <= ship_exp_x_reg + EXP_SIZE - 1) and
+        (pix_y >= ship_exp_y_reg) and (pix_y <= ship_exp_y_reg + EXP_SIZE - 1)
+    else '0';
+
+    ship_exp_x_pix <= (pix_x - ship_exp_x_reg) / EXP_SCALE;
+    ship_exp_y_pix <= (pix_y - ship_exp_y_reg) / EXP_SCALE;
+
+    ship_exp_rom_addr <= ship_exp_y_pix(3 downto 0);
+    ship_exp_rom_col  <= ship_exp_x_pix(3 downto 0);
+    ship_exp_rom_data <= EXP_ROM(to_integer(ship_exp_rom_addr));
+    ship_exp_rom_bit  <= ship_exp_rom_data(to_integer(ship_exp_rom_col));
+
+    ship_exp_on <= '1' when
+        (ship_exp_active_reg = '1') and
+        (ship_exp_region_on = '1') and
+        (ship_exp_rom_bit = '1')
+    else '0';
+
+    --------------------------------------------------------------------
+    -- SHIP COLOR
+    -- Search phrase: SHIP COLOR
+    --------------------------------------------------------------------
+    ship_rgb <= "011"; -- cyan
+
+    --------------------------------------------------------------------
+    -- MISSILE COLOR
+    -- Search phrase: MISSILE COLOR
+    --------------------------------------------------------------------
+    firing_ball_rgb <= "110"; -- yellow
+
+    --------------------------------------------------------------------
+    -- ASTEROID COLOR
+    -- Search phrase: ASTEROID COLOR
+    --------------------------------------------------------------------
+    asteroid_rgb <= "100"; -- red
+
+    --------------------------------------------------------------------
+    -- RGB PRIORITY
+    -- Search phrase: RGB PRIORITY
+    -- Highest priority objects are checked first.
+    -- Order:
+    --   1. asteroid explosion
+    --   2. ship explosion
+    --   3. missile
+    --   4. asteroid
+    --   5. ship
+    --   6. background
+    --------------------------------------------------------------------
+    process(video_on, ship_on, firing_ball_on, asteroid_on,
+            asteroid_exp_on, ship_exp_on,
+            asteroid_exp_timer_reg, ship_exp_timer_reg,
+            ship_rgb, firing_ball_rgb, asteroid_rgb)
+    begin
+        if video_on = '0' then
+            graph_rgb <= "000";
+        else
+            if asteroid_exp_on = '1' then
+                if (asteroid_exp_timer_reg mod 2) = 0 then
+                    graph_rgb <= "110";
+                else
+                    graph_rgb <= "111";
+                end if;
+            elsif ship_exp_on = '1' then
+                if (ship_exp_timer_reg mod 2) = 0 then
+                    graph_rgb <= "110";
+                else
+                    graph_rgb <= "111";
+                end if;
+            elsif firing_ball_on = '1' then
+                graph_rgb <= firing_ball_rgb;
+            elsif asteroid_on = '1' then
+                graph_rgb <= asteroid_rgb;
+            elsif ship_on = '1' then
+                graph_rgb <= ship_rgb;
+            else
+                ----------------------------------------------------------------
+                -- BACKGROUND COLOR
+                -- Search phrase: BACKGROUND COLOR
+                ----------------------------------------------------------------
+                graph_rgb <= "001"; -- dark blue
+            end if;
+        end if;
+    end process;
+
+end sq_ball_arch;
+
+
