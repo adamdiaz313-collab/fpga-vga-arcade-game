@@ -1,0 +1,192 @@
+================================================================================
+lives_disp_Diaz.vhd
+================================================================================
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity lives_disp is
+    port(
+        pixel_x : in std_logic_vector(9 downto 0);
+        pixel_y : in std_logic_vector(9 downto 0);
+        lives_cnt : in std_logic_vector(2 downto 0);
+        sq_lives_on_output : out std_logic;
+        graph_rgb : out std_logic_vector(2 downto 0)
+    );
+end lives_disp;
+
+architecture Behavioral of lives_disp is
+
+    --------------------------------------------------------------------
+    -- PIXEL SIGNALS
+    -- Search phrase: LIVES PIXEL SIGNALS
+    --------------------------------------------------------------------
+    signal pix_x, pix_y : unsigned(9 downto 0);
+    signal lives_u : unsigned(2 downto 0);
+
+    --------------------------------------------------------------------
+    -- LIVES DISPLAY LOCATION
+    -- Search phrase: LIVES DISPLAY LOCATION
+    -- Change these if you want the life number somewhere else.
+    --------------------------------------------------------------------
+    constant CNT_SIZE : integer := 16;
+    constant LIVES_X_L : integer := 20;
+    constant LIVES_X_R : integer := LIVES_X_L + CNT_SIZE - 1;
+    constant LIVES_Y_T : integer := 20;
+    constant LIVES_Y_B : integer := LIVES_Y_T + CNT_SIZE - 1;
+
+    --------------------------------------------------------------------
+    -- LIVES DIGIT ROMS
+    -- Search phrase: LIVES DIGIT ROMS
+    -- These are the bitmaps for 0,1,2,3.
+    --------------------------------------------------------------------
+    type counter_type is array(0 to 15) of std_logic_vector(15 downto 0);
+    signal lives_rom_current : counter_type;
+
+    constant LIVES_ROM_0 : counter_type := (
+        "0000111111110000",
+        "0001111111111100",
+        "0011110000111110",
+        "0111100000011111",
+        "0111000000001111",
+        "1111000000001111",
+        "1110000000000111",
+        "1110000000000111",
+        "1110000000000111",
+        "1110000000000111",
+        "1111000000001111",
+        "0111000000001111",
+        "0111100000011111",
+        "0011110000111110",
+        "0001111111111100",
+        "0000111111110000"
+    );
+
+    constant LIVES_ROM_1 : counter_type := (
+        "0000001111000000",
+        "0000011111000000",
+        "0000111111000000",
+        "0001111111000000",
+        "0011111111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0000001111000000",
+        "0011111111111100",
+        "0011111111111100"
+    );
+
+    constant LIVES_ROM_2 : counter_type := (
+        "0001111111111000",
+        "0011111111111100",
+        "0111100000111110",
+        "0000000000011110",
+        "0000000000111100",
+        "0000000001111000",
+        "0000000011110000",
+        "0000000111100000",
+        "0000001111000000",
+        "0000011110000000",
+        "0000111100000000",
+        "0001111000000000",
+        "0011110000000000",
+        "0111100000000000",
+        "0111111111111110",
+        "0111111111111110"
+    );
+
+    constant LIVES_ROM_3 : counter_type := (
+        "0001111111111000",
+        "0011111111111100",
+        "0111100000111110",
+        "0000000000011110",
+        "0000000000011110",
+        "0000000011111100",
+        "0000000011111100",
+        "0000000000011110",
+        "0000000000001111",
+        "0000000000001111",
+        "0000000000001111",
+        "0111100000011110",
+        "0111110000111110",
+        "0011111111111100",
+        "0001111111111000",
+        "0000111111110000"
+    );
+
+    signal rom_addr_lives, rom_col_lives : unsigned(3 downto 0);
+    signal rom_data_lives : std_logic_vector(15 downto 0);
+    signal rom_bit_lives : std_logic;
+    signal sq_lives_on : std_logic;
+    signal lives_cur_val_on : std_logic;
+    signal lives_rgb : std_logic_vector(2 downto 0);
+    signal lives_y_t_u : unsigned(9 downto 0);
+    signal lives_x_l_u : unsigned(9 downto 0);
+
+begin
+
+    --------------------------------------------------------------------
+    -- PIXEL CASTING
+    -- Search phrase: LIVES PIXEL CASTING
+    --------------------------------------------------------------------
+    pix_x <= unsigned(pixel_x);
+    pix_y <= unsigned(pixel_y);
+    lives_u <= unsigned(lives_cnt);
+
+    --------------------------------------------------------------------
+    -- COUNTER REGION CHECK
+    -- Search phrase: COUNTER REGION CHECK
+    --------------------------------------------------------------------
+    sq_lives_on <= '1' when
+        (pix_x >= to_unsigned(LIVES_X_L,10)) and (pix_x <= to_unsigned(LIVES_X_R,10)) and
+        (pix_y >= to_unsigned(LIVES_Y_T,10)) and (pix_y <= to_unsigned(LIVES_Y_B,10))
+    else '0';
+
+    --------------------------------------------------------------------
+    -- DIGIT SELECTION
+    -- Search phrase: DIGIT SELECTION
+    --------------------------------------------------------------------
+    with to_integer(lives_u) select
+        lives_rom_current <=
+            LIVES_ROM_0 when 0,
+            LIVES_ROM_1 when 1,
+            LIVES_ROM_2 when 2,
+            LIVES_ROM_3 when 3,
+            LIVES_ROM_0 when others;
+
+    lives_y_t_u <= to_unsigned(LIVES_Y_T, 10);
+    lives_x_l_u <= to_unsigned(LIVES_X_L, 10);
+
+    --------------------------------------------------------------------
+    -- DIGIT ROM LOOKUP
+    -- Search phrase: DIGIT ROM LOOKUP
+    --------------------------------------------------------------------
+    rom_addr_lives <= pix_y(3 downto 0) - lives_y_t_u(3 downto 0);
+    rom_col_lives  <= pix_x(3 downto 0) - lives_x_l_u(3 downto 0);
+
+    rom_data_lives <= lives_rom_current(to_integer(rom_addr_lives));
+    rom_bit_lives <= rom_data_lives(to_integer(rom_col_lives));
+
+    --------------------------------------------------------------------
+    -- FINAL DIGIT PIXEL
+    -- Search phrase: FINAL DIGIT PIXEL
+    --------------------------------------------------------------------
+    lives_cur_val_on <= '1' when (sq_lives_on = '1' and rom_bit_lives = '1') else '0';
+
+    --------------------------------------------------------------------
+    -- LIVES COLOR
+    -- Search phrase: LIVES COLOR
+    --------------------------------------------------------------------
+    lives_rgb <= "010"; -- green
+
+    graph_rgb <= lives_rgb when lives_cur_val_on = '1' else "000";
+    sq_lives_on_output <= sq_lives_on;
+
+end Behavioral;
+
+
